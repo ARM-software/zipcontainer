@@ -18,6 +18,7 @@ enum zipc_status
 	ZIPC_IO_FAILURE,
 	ZIPC_CORRUPT_ARCHIVE,
 	ZIPC_UNSUPPORTED_FEATURE,
+	ZIPC_PATH_NOT_FOUND,
 	// TBD many more here
 };
 

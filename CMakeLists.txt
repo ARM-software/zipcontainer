@@ -17,3 +17,6 @@ add_executable(zipctest tests/zipctest.cpp ${PROJECT_SOURCE_DIR}/zipc.cpp ${PROJ
 target_include_directories(zipctest PUBLIC ${PROJECT_SOURCE_DIR})
 target_compile_options(zipctest PRIVATE -Wall)
 add_test(NAME zipctest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/zipctest)
+set_tests_properties(zipctest PROPERTIES FIXTURES_SETUP testfile_zip)
+add_test(NAME zipctest_result COMMAND zip -T ${CMAKE_CURRENT_BINARY_DIR}/testfile.zip)
+set_tests_properties(zipctest_result PROPERTIES FIXTURES_REQUIRED testfile_zip)
