@@ -2,6 +2,7 @@
 
 #include <assert.h>
 #include <string.h>
+#include <stdio.h>
 
 int main(int argc, char** argv)
 {
@@ -42,6 +43,44 @@ int main(int argc, char** argv)
 	assert(((const char*)map.data)[map.size - 1] == content[strlen(content) - 1]);
 	zipc_unmap(z, map);
 	zipc_close(z);
+
+	// Test existing zip files
+	z = zipc_open(TEXT_FILES_ZIP, "r", &r);
+	assert(z);
+	assert(r == ZIPC_SUCCESS);
+	size = zipc_filesize(z, "first.txt");
+	assert(size != -1);
+	size = zipc_filesize(z, "second.txt");
+	assert(size != -1);
+	size = zipc_filesize(z, "third.txt");
+	assert(size != -1);
+	assert(r == ZIPC_SUCCESS);
+	assert(z);
+	zipc_close(z);
+
+	// This one was created slightly different and has a comment
+	z = zipc_open(TEXT_FILES2_ZIP, "r", &r);
+	assert(z);
+	assert(r == ZIPC_SUCCESS);
+	size = zipc_filesize(z, "first.txt");
+	assert(size != -1);
+	size = zipc_filesize(z, "second.txt");
+	assert(size != -1);
+	size = zipc_filesize(z, "third.txt");
+	assert(size != -1);
+	assert(r == ZIPC_SUCCESS);
+	assert(z);
+	zipc_close(z);
+
+	// Compressed files are expected to fail
+	z = zipc_open(COMPRESSED_ZIP, "r", &r);
+	assert(z == nullptr);
+	assert(r == ZIPC_UNSUPPORTED_FEATURE);
+
+	// Encrypted files are expected to fail
+	z = zipc_open(ENCRYPTED_ZIP, "r", &r);
+	assert(z == nullptr);
+	assert(r == ZIPC_UNSUPPORTED_FEATURE);
 
 	// TBD test zipc_map with write mode
 
