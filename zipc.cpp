@@ -32,6 +32,22 @@ static uint32_t read_le32(const unsigned char* ptr)
 	return (uint32_t)ptr[0] | ((uint32_t)ptr[1] << 8U) | ((uint32_t)ptr[2] << 16U) | ((uint32_t)ptr[3] << 24U);
 }
 
+const char* zipc_strerror(zipc_status err)
+{
+	switch (err)
+	{
+		case ZIPC_SUCCESS: return "Success";
+		case ZIPC_SYNTAX_ERROR: return "Syntax error";
+		case ZIPC_PERMISSION_FAILURE: return "Permission failure";
+		case ZIPC_PATH_ALREADY_EXISTS: return "Path already exists";
+		case ZIPC_IO_FAILURE: return "I/O failure";
+		case ZIPC_CORRUPT_ARCHIVE: return "Corrupt archive";
+		case ZIPC_UNSUPPORTED_FEATURE: return "Unsupported feature";
+		case ZIPC_PATH_NOT_FOUND: return "Path not found";
+		default: return "Unknown error";
+	}
+}
+
 static const uint32_t* crc32_table()
 {
 	static uint32_t table[256];

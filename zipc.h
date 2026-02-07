@@ -21,6 +21,9 @@ enum zipc_status
 	ZIPC_PATH_NOT_FOUND,
 };
 
+/// Return a string explaining one of our error codes.
+const char* zipc_strerror(zipc_status err);
+
 /// Open an uncompressed ZIP file. Mode is 'r' for reading, 'w' for writing (replacing
 /// any existing file), or 'a' for appending. You are responsible for synchronizing
 /// thread access to the returned handle unless otherwise specified below. You cannot
