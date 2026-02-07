@@ -22,6 +22,33 @@ enum zipc_mode
 	ZIPC_APPEND,
 };
 
+struct filenode
+{
+	size_t size;
+	size_t data_offset;
+	uint32_t local_offset;
+	uint32_t crc;
+};
+
+struct zipc
+{
+	std::string filename;
+	zipc_mode mode;
+	FILE* fp = nullptr;
+	std::unordered_map<std::string, filenode> files;
+	size_t central_dir_offset = 0;
+	bool central_dir_known = false;
+};
+
+struct zipcstream
+{
+	zipc* parent = nullptr;
+	FILE* stream = nullptr;
+	std::string path;
+};
+
+// Utility functions
+
 static uint16_t read_le16(const unsigned char* ptr)
 {
 	return (uint16_t)ptr[0] | ((uint16_t)ptr[1] << 8U);
@@ -30,22 +57,6 @@ static uint16_t read_le16(const unsigned char* ptr)
 static uint32_t read_le32(const unsigned char* ptr)
 {
 	return (uint32_t)ptr[0] | ((uint32_t)ptr[1] << 8U) | ((uint32_t)ptr[2] << 16U) | ((uint32_t)ptr[3] << 24U);
-}
-
-const char* zipc_strerror(zipc_status err)
-{
-	switch (err)
-	{
-		case ZIPC_SUCCESS: return "Success";
-		case ZIPC_SYNTAX_ERROR: return "Syntax error";
-		case ZIPC_PERMISSION_FAILURE: return "Permission failure";
-		case ZIPC_PATH_ALREADY_EXISTS: return "Path already exists";
-		case ZIPC_IO_FAILURE: return "I/O failure";
-		case ZIPC_CORRUPT_ARCHIVE: return "Corrupt archive";
-		case ZIPC_UNSUPPORTED_FEATURE: return "Unsupported feature";
-		case ZIPC_PATH_NOT_FOUND: return "Path not found";
-		default: return "Unknown error";
-	}
 }
 
 static const uint32_t* crc32_table()
@@ -146,31 +157,6 @@ static bool compute_data_offset(FILE* fp, uint32_t local_offset, size_t* data_of
 	return true;
 }
 
-struct filenode
-{
-	size_t size;
-	size_t data_offset;
-	uint32_t local_offset;
-	uint32_t crc;
-};
-
-struct zipc
-{
-	std::string filename;
-	zipc_mode mode;
-	FILE* fp = nullptr;
-	std::unordered_map<std::string, filenode> files;
-	size_t central_dir_offset = 0;
-	bool central_dir_known = false;
-};
-
-struct zipcstream
-{
-	zipc* parent = nullptr;
-};
-
-// Implementations
-
 static enum zipc_status load_existing_archive(zipc* z)
 {
 	FILE* fp = z->fp;
@@ -245,6 +231,24 @@ static enum zipc_status load_existing_archive(zipc* z)
 	z->central_dir_offset = cd_offset;
 	z->central_dir_known = true;
 	return ZIPC_SUCCESS;
+}
+
+// Implementations
+
+const char* zipc_strerror(zipc_status err)
+{
+	switch (err)
+	{
+		case ZIPC_SUCCESS: return "Success";
+		case ZIPC_SYNTAX_ERROR: return "Syntax error";
+		case ZIPC_PERMISSION_FAILURE: return "Permission failure";
+		case ZIPC_PATH_ALREADY_EXISTS: return "Path already exists";
+		case ZIPC_IO_FAILURE: return "I/O failure";
+		case ZIPC_CORRUPT_ARCHIVE: return "Corrupt archive";
+		case ZIPC_UNSUPPORTED_FEATURE: return "Unsupported feature";
+		case ZIPC_PATH_NOT_FOUND: return "Path not found";
+		default: return "Unknown error";
+	}
 }
 
 zipc* zipc_open(const char* filename, const char* mode, enum zipc_status* err)
@@ -577,16 +581,22 @@ zipcstream* zipc_stream_open(zipc* handle, const char* path, const char* mode, e
 	assert(handle);
 	assert(path);
 	zipcstream* c = new zipcstream();
-	// TBD squash any file path in `path` for our temp file, don't want to create any temp dir mess
+	c->parent = handle;
+	c->path = path;
+
+	// TBD maybe squash any file path in `path` to create our temp filename, don't want to create any temp dir mess
 	// TBD we need to make the temp files on the same device as the zipc file or we'll fail to zero-copy the contents on close
+
 	if (err) *err = ZIPC_SUCCESS;
 	return c;
 }
 
-enum zipc_status zipc_stream_write(const zipc* handle, zipcstream* stream, const char* path, size_t size, const void* ptr)
+enum zipc_status zipc_stream_write(const zipc* handle, zipcstream* stream, size_t size, const void* ptr)
 {
 	assert(handle);
 	assert(stream);
+	assert(size > 0);
+	assert(ptr);
 	// TBD
 	return ZIPC_SUCCESS;
 }
