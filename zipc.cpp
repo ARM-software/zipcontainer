@@ -12,6 +12,8 @@
 #include <vector>
 #include <unistd.h>
 #include <sys/mman.h>
+#include <fcntl.h>
+#include <errno.h>
 
 extern "C" ssize_t copy_file_range(int fd_in, off_t* off_in, int fd_out, off_t* off_out, size_t len, unsigned int flags);
 
@@ -912,10 +914,21 @@ enum zipc_status zipc_stream_close(zipc* handle, zipcstream* stream)
 	}
 
 	remaining = data_size;
+#if defined(FALLOC_FL_PUNCH_HOLE) && defined(FALLOC_FL_KEEP_SIZE)
+	bool punch_hole_enabled = true;
+#endif
 	while (remaining > 0)
 	{
 		size_t chunk = remaining;
 		if (chunk > (1U << 30)) chunk = (1U << 30);
+		const off_t punch_offset = lseek(fd_in, 0, SEEK_CUR);
+		if (punch_offset < 0)
+		{
+			fclose(stream->stream);
+			if (!stream->temp_path.empty()) unlink(stream->temp_path.c_str());
+			delete stream;
+			return ZIPC_IO_FAILURE;
+		}
 		const ssize_t moved = copy_file_range(fd_in, nullptr, fd_out, nullptr, chunk, 0);
 		if (moved <= 0)
 		{
@@ -924,6 +937,27 @@ enum zipc_status zipc_stream_close(zipc* handle, zipcstream* stream)
 			delete stream;
 			return ZIPC_IO_FAILURE;
 		}
+#if defined(FALLOC_FL_PUNCH_HOLE) && defined(FALLOC_FL_KEEP_SIZE)
+		if (punch_hole_enabled)
+		{
+			const int falloc_rc = fallocate(fd_in, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE,
+				punch_offset, (off_t)moved);
+			if (falloc_rc != 0)
+			{
+				if (errno == EOPNOTSUPP || errno == ENOSYS || errno == ENOTTY || errno == EINVAL)
+				{
+					punch_hole_enabled = false;
+				}
+				else
+				{
+					fclose(stream->stream);
+					if (!stream->temp_path.empty()) unlink(stream->temp_path.c_str());
+					delete stream;
+					return ZIPC_IO_FAILURE;
+				}
+			}
+		}
+#endif
 		remaining -= (size_t)moved;
 	}
 	if (fseek(handle->fp, 0, SEEK_CUR) != 0)

@@ -1,8 +1,67 @@
 #include "zipc.h"
 
 #include <assert.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <unistd.h>
+#include <vector>
+
+#if defined(FALLOC_FL_PUNCH_HOLE) && defined(FALLOC_FL_KEEP_SIZE)
+static void test_punch_hole_support()
+{
+	char tmpl[] = "zipc_punch_XXXXXX";
+	const int fd = mkstemp(tmpl);
+	assert(fd >= 0);
+
+	const size_t data_size = 2 * 1024 * 1024;
+	std::vector<unsigned char> buf(4096, 0xAB);
+	size_t remaining = data_size;
+	while (remaining > 0)
+	{
+		const size_t chunk = remaining < buf.size() ? remaining : buf.size();
+		const ssize_t w = write(fd, buf.data(), chunk);
+		assert(w > 0);
+		remaining -= (size_t)w;
+	}
+	assert(fsync(fd) == 0);
+
+	struct stat st_before{};
+	assert(fstat(fd, &st_before) == 0);
+	if (st_before.st_blocks == 0)
+	{
+		fprintf(stderr, "punch-hole test: st_blocks is 0, skipping\n");
+		close(fd);
+		unlink(tmpl);
+		return;
+	}
+
+	const int rc = fallocate(fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, 0, (off_t)data_size);
+	if (rc != 0)
+	{
+		if (errno == EOPNOTSUPP || errno == ENOSYS || errno == ENOTTY || errno == EINVAL)
+		{
+			fprintf(stderr, "punch-hole test: unsupported, skipping\n");
+			close(fd);
+			unlink(tmpl);
+			return;
+		}
+		assert(false);
+	}
+
+	struct stat st_after{};
+	assert(fstat(fd, &st_after) == 0);
+	assert(st_after.st_blocks < st_before.st_blocks);
+	fprintf(stderr, "punch-hole test: supported (blocks %ld -> %ld)\n",
+		(long)st_before.st_blocks, (long)st_after.st_blocks);
+
+	close(fd);
+	unlink(tmpl);
+}
+#endif
 
 int main(int argc, char** argv)
 {
@@ -78,6 +137,10 @@ int main(int argc, char** argv)
 	assert(strncmp(full_stream, stream_readback, strlen(full_stream)) == 0);
 	assert(zipc_validate(z) == ZIPC_SUCCESS);
 	zipc_close(z);
+
+#if defined(FALLOC_FL_PUNCH_HOLE) && defined(FALLOC_FL_KEEP_SIZE)
+	test_punch_hole_support();
+#endif
 
 	// Test existing zip files
 	z = zipc_open(TEXT_FILES_ZIP, "r", &r);
