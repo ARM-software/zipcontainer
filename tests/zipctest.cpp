@@ -82,7 +82,8 @@ int main(int argc, char** argv)
 	r = zipc_write(z, internal_filename, strlen(content), content);
 	assert(r == ZIPC_SUCCESS);
 	assert(zipc_filesize(z, internal_filename) == (ssize_t)strlen(content));
-	zipc_close(z);
+	r = zipc_close(z);
+	assert(r == ZIPC_SUCCESS);
 
 	// Read zip file just created
 	z = zipc_open("testfile.zip", "r", &r);
@@ -102,7 +103,8 @@ int main(int argc, char** argv)
 	assert(((const char*)map.data)[map.size - 1] == content[strlen(content) - 1]);
 	zipc_unmap_read(z, map);
 	assert(zipc_validate(z) == ZIPC_SUCCESS);
-	zipc_close(z);
+	r = zipc_close(z);
+	assert(r == ZIPC_SUCCESS);
 
 	// Stream write zip file
 	const char* stream_zip_filename = "streamfile.zip";
@@ -124,7 +126,8 @@ int main(int argc, char** argv)
 	stream = zipc_stream_open(z, "stream.txt", "", &r);
 	assert(stream == nullptr);
 	assert(r == ZIPC_PATH_ALREADY_EXISTS);
-	zipc_close(z);
+	r = zipc_close(z);
+	assert(r == ZIPC_SUCCESS);
 
 	z = zipc_open(stream_zip_filename, "r", &r);
 	assert(r == ZIPC_SUCCESS);
@@ -136,7 +139,8 @@ int main(int argc, char** argv)
 	assert(r == ZIPC_SUCCESS);
 	assert(strncmp(full_stream, stream_readback, strlen(full_stream)) == 0);
 	assert(zipc_validate(z) == ZIPC_SUCCESS);
-	zipc_close(z);
+	r = zipc_close(z);
+	assert(r == ZIPC_SUCCESS);
 
 #if defined(FALLOC_FL_PUNCH_HOLE) && defined(FALLOC_FL_KEEP_SIZE)
 	test_punch_hole_support();
@@ -157,7 +161,8 @@ int main(int argc, char** argv)
 	r = zipc_unmap_write(z, map_write, map_write.size);
 	assert(r == ZIPC_SUCCESS);
 	assert(zipc_validate(z) == ZIPC_SUCCESS);
-	zipc_close(z);
+	r = zipc_close(z);
+	assert(r == ZIPC_SUCCESS);
 
 	z = zipc_open(map_zip_filename, "r", &r);
 	assert(r == ZIPC_SUCCESS);
@@ -169,7 +174,8 @@ int main(int argc, char** argv)
 	assert(r == ZIPC_SUCCESS);
 	assert(strncmp(map_content, map_readback, strlen(map_content)) == 0);
 	assert(zipc_validate(z) == ZIPC_SUCCESS);
-	zipc_close(z);
+	r = zipc_close(z);
+	assert(r == ZIPC_SUCCESS);
 
 	// Test existing zip files
 	z = zipc_open(TEXT_FILES_ZIP, "r", &r);
@@ -184,7 +190,8 @@ int main(int argc, char** argv)
 	assert(zipc_validate(z) == ZIPC_SUCCESS);
 	assert(r == ZIPC_SUCCESS);
 	assert(z);
-	zipc_close(z);
+	r = zipc_close(z);
+	assert(r == ZIPC_SUCCESS);
 
 	// This one was created slightly different and has a comment
 	z = zipc_open(TEXT_FILES2_ZIP, "r", &r);
@@ -199,7 +206,8 @@ int main(int argc, char** argv)
 	assert(zipc_validate(z) == ZIPC_SUCCESS);
 	assert(r == ZIPC_SUCCESS);
 	assert(z);
-	zipc_close(z);
+	r = zipc_close(z);
+	assert(r == ZIPC_SUCCESS);
 
 	// Compressed files are expected to fail
 	z = zipc_open(COMPRESSED_ZIP, "r", &r);

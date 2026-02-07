@@ -109,7 +109,8 @@ int main(int argc, char** argv)
 	assert(r == ZIPC_PATH_ALREADY_EXISTS);
 
 	assert(zipc_validate(z) == ZIPC_SUCCESS);
-	zipc_close(z);
+	r = zipc_close(z);
+	assert(r == ZIPC_SUCCESS);
 
 	// Reopen and validate contents.
 	z = zipc_open(zip_filename, "r", &r);
@@ -137,6 +138,7 @@ int main(int argc, char** argv)
 	}
 
 	assert(zipc_validate(z) == ZIPC_SUCCESS);
-	zipc_close(z);
+	r = zipc_close(z);
+	assert(r == ZIPC_SUCCESS);
 	return 0;
 }

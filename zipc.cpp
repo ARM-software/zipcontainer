@@ -419,16 +419,14 @@ zipc* zipc_open(const char* filename, const char* mode, enum zipc_status* err)
 	return z;
 }
 
-void zipc_close(zipc* handle)
+enum zipc_status zipc_close(zipc* handle)
 {
-	if (!handle) return;
-	assert(!handle->map_write_active);
-	if (handle->map_write_active && handle->map_write_base && handle->map_write_length)
-	{
-		munmap(handle->map_write_base, handle->map_write_length);
-	}
-	if (handle->fp) fclose(handle->fp);
+	enum zipc_status r = ZIPC_SUCCESS;
+	if (!handle) return r;
+	if (handle->map_write_active) r = ZIPC_SYNTAX_ERROR;
+	if (handle->fp && fclose(handle->fp) != 0) r = ZIPC_IO_FAILURE;
 	delete handle;
+	return ZIPC_SUCCESS;
 }
 
 ssize_t zipc_filesize(zipc* handle, const char* path)
@@ -669,53 +667,57 @@ void zipc_unmap_read(zipc* handle, zipc_mapping mapping)
 enum zipc_status zipc_unmap_write(zipc* handle, zipc_mapping mapping, size_t size)
 {
 	assert(handle);
-	enum zipc_status status = ZIPC_SUCCESS;
 	if (!handle || !mapping.data) return ZIPC_SYNTAX_ERROR;
 	if (!handle->map_write_active) return ZIPC_SYNTAX_ERROR;
 	if (mapping.data != handle->map_write_data) return ZIPC_SYNTAX_ERROR;
 	if (size > handle->map_write_max) return ZIPC_SYNTAX_ERROR;
 	if (!handle->fp) return ZIPC_IO_FAILURE;
 
+	enum zipc_status status = ZIPC_SUCCESS;
 	const uint32_t crc = crc32_calc(mapping.data, size);
 	if (munmap(handle->map_write_base, handle->map_write_length) != 0) status = ZIPC_IO_FAILURE;
 
 	const size_t end_offset = handle->map_write_data_offset + size;
-	if (size < handle->map_write_max)
+	if (status == ZIPC_SUCCESS && size < handle->map_write_max)
 	{
 		const int fd = fileno(handle->fp);
 		if (fd >= 0 && ftruncate(fd, (off_t)end_offset) != 0) status = ZIPC_IO_FAILURE;
 	}
 
-	if (fseek(handle->fp, (long)handle->map_write_local_offset + 14, SEEK_SET) != 0) status = ZIPC_IO_FAILURE;
+	if (status == ZIPC_SUCCESS &&
+		fseek(handle->fp, (long)handle->map_write_local_offset + 14, SEEK_SET) != 0) status = ZIPC_IO_FAILURE;
 	unsigned char header[12];
-	header[0] = (unsigned char)(crc & 0xFF);
-	header[1] = (unsigned char)((crc >> 8) & 0xFF);
-	header[2] = (unsigned char)((crc >> 16) & 0xFF);
-	header[3] = (unsigned char)((crc >> 24) & 0xFF);
-	const uint32_t size32 = (uint32_t)size;
-	header[4] = (unsigned char)(size32 & 0xFF);
-	header[5] = (unsigned char)((size32 >> 8) & 0xFF);
-	header[6] = (unsigned char)((size32 >> 16) & 0xFF);
-	header[7] = (unsigned char)((size32 >> 24) & 0xFF);
-	header[8] = header[4];
-	header[9] = header[5];
-	header[10] = header[6];
-	header[11] = header[7];
-	if (!write_all(handle->fp, header, sizeof(header))) status = ZIPC_IO_FAILURE;
-
-	if (fseek(handle->fp, (long)end_offset, SEEK_SET) != 0) status = ZIPC_IO_FAILURE;
-	filenode node;
-	node.size = size;
-	node.data_offset = handle->map_write_data_offset;
-	node.local_offset = handle->map_write_local_offset;
-	node.crc = crc;
-	handle->files.emplace(handle->map_write_path, node);
-
-	const enum zipc_status cd_status = write_central_directory(handle);
-	if (cd_status != ZIPC_SUCCESS)
+	if (status == ZIPC_SUCCESS)
 	{
-		handle->files.erase(handle->map_write_path);
-		if (status == ZIPC_SUCCESS) status = cd_status;
+		header[0] = (unsigned char)(crc & 0xFF);
+		header[1] = (unsigned char)((crc >> 8) & 0xFF);
+		header[2] = (unsigned char)((crc >> 16) & 0xFF);
+		header[3] = (unsigned char)((crc >> 24) & 0xFF);
+		const uint32_t size32 = (uint32_t)size;
+		header[4] = (unsigned char)(size32 & 0xFF);
+		header[5] = (unsigned char)((size32 >> 8) & 0xFF);
+		header[6] = (unsigned char)((size32 >> 16) & 0xFF);
+		header[7] = (unsigned char)((size32 >> 24) & 0xFF);
+		header[8] = header[4];
+		header[9] = header[5];
+		header[10] = header[6];
+		header[11] = header[7];
+		if (!write_all(handle->fp, header, sizeof(header))) status = ZIPC_IO_FAILURE;
+	}
+
+	if (status == ZIPC_SUCCESS &&
+		fseek(handle->fp, (long)end_offset, SEEK_SET) != 0) status = ZIPC_IO_FAILURE;
+	if (status == ZIPC_SUCCESS)
+	{
+		filenode node;
+		node.size = size;
+		node.data_offset = handle->map_write_data_offset;
+		node.local_offset = handle->map_write_local_offset;
+		node.crc = crc;
+		handle->files.emplace(handle->map_write_path, node);
+
+		status = write_central_directory(handle);
+		if (status != ZIPC_SUCCESS) handle->files.erase(handle->map_write_path);
 	}
 
 	handle->map_write_active = false;

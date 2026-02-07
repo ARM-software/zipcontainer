@@ -30,8 +30,8 @@ const char* zipc_strerror(zipc_status err);
 /// mix modes. If `err` is not null, we will write status to it. Returns null on failure.
 zipc* zipc_open(const char* filename, const char* mode, enum zipc_status* err);
 
-/// Close an open ZIP file handle.
-void zipc_close(zipc* handle);
+/// Close an open ZIP file handle. Returns ZIPC_SUCCESS on clean close.
+enum zipc_status zipc_close(zipc* handle);
 
 /// Obtain the filesize of a given file inside the ZIP container. Return -1 if the
 /// file is not found. This function is thread-safe.
