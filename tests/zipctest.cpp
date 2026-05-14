@@ -53,6 +53,38 @@ static bool write_all_test(FILE* fp, const void* data, size_t size)
 	return fwrite(data, 1, size, fp) == size;
 }
 
+static void write_text_file(const char* filename, const char* content)
+{
+	FILE* fp = fopen(filename, "wb");
+	assert(fp);
+	assert(write_all_test(fp, content, strlen(content)));
+	assert(fclose(fp) == 0);
+}
+
+static std::string read_text_file(const char* filename)
+{
+	FILE* fp = fopen(filename, "rb");
+	assert(fp);
+	std::string result;
+	unsigned char buf[4096];
+	for (;;)
+	{
+		const size_t bytes = fread(buf, 1, sizeof(buf), fp);
+		result.append((const char*)buf, bytes);
+		if (bytes < sizeof(buf)) break;
+	}
+	assert(!ferror(fp));
+	assert(fclose(fp) == 0);
+	return result;
+}
+
+static off_t file_size_on_disk(const char* filename)
+{
+	struct stat st{};
+	assert(stat(filename, &st) == 0);
+	return st.st_size;
+}
+
 static uint32_t crc32_test(const void* data, size_t size)
 {
 	uint32_t crc = 0xFFFFFFFFU;
@@ -360,6 +392,23 @@ static void test_compare_utility()
 	assert(packed.empty());
 	packed = zipc_files("does-not-exist.zip");
 	assert(packed.empty());
+
+	unlink("utility.zip");
+	unlink("utility-source.txt");
+	write_text_file("utility-source.txt", "utility file contents");
+	assert(zipc_add_file("utility.zip", "utility-source.txt") == ZIPC_SUCCESS);
+	assert(zipc_add_file("utility.zip", "utility-source.txt") == ZIPC_PATH_ALREADY_EXISTS);
+	packed = zipc_files("utility.zip");
+	assert(packed.size() == 1);
+	assert(packed[0] == "utility-source.txt");
+	write_text_file("utility-source.txt", "overwritten before extract");
+	assert(zipc_extract_file("utility.zip", "utility-source.txt") == ZIPC_SUCCESS);
+	assert(read_text_file("utility-source.txt") == "utility file contents");
+	assert(zipc_extract_file("utility.zip", "missing-utility.txt") == ZIPC_PATH_NOT_FOUND);
+	assert(zipc_add_file("utility.zip", "missing-utility.txt") == ZIPC_PATH_NOT_FOUND);
+	const off_t utility_zip_size = file_size_on_disk("utility.zip");
+	assert(zipc_extract_file("utility.zip", "utility.zip") == ZIPC_PATH_NOT_FOUND);
+	assert(file_size_on_disk("utility.zip") == utility_zip_size);
 
 	const zipc_comparison* comparison = zipc_compare("compare_first.zip", "compare_second.zip");
 	assert(comparison);

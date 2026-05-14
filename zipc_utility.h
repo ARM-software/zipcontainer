@@ -62,4 +62,13 @@ void zipc_compare_free(const zipc_comparison* differences);
 /// only paths with that prefix are returned. Returns an empty vector if the archive
 /// cannot be opened.
 std::vector<std::string> zipc_files(const std::string& zipname,	const std::string& startsWith = std::string());
+
+/// Add `targetFile` from the filesystem to `zipname`, using `targetFile` as the path
+/// inside the ZIP container. Creates `zipname` if needed, and fails if the packed path
+/// already exists.
+enum zipc_status zipc_add_file(const std::string& zipname, const std::string& targetFile);
+
+/// Extract `targetFile` from `zipname`, using `targetFile` as both the packed path and
+/// output filesystem path. Overwrites the output file if it already exists.
+enum zipc_status zipc_extract_file(const std::string& zipname, const std::string& targetFile);
 #endif

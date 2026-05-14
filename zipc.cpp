@@ -1753,3 +1753,169 @@ std::vector<std::string> zipc_files(const std::string& zipname, const std::strin
 	if (close_status != ZIPC_SUCCESS) return {};
 	return files;
 }
+
+static void zipc_stream_abort(zipcstream* stream)
+{
+	if (!stream) return;
+	if (stream->stream) fclose(stream->stream);
+	if (!stream->temp_path.empty()) unlink(stream->temp_path.c_str());
+	delete stream;
+}
+
+static enum zipc_status zipc_close_preserving_status(zipc* z, enum zipc_status status)
+{
+	const enum zipc_status close_status = zipc_close(z);
+	if (status == ZIPC_SUCCESS && close_status != ZIPC_SUCCESS) return close_status;
+	return status;
+}
+
+static enum zipc_status zipc_file_open_status()
+{
+	if (errno == ENOENT || errno == ENOTDIR) return ZIPC_PATH_NOT_FOUND;
+	if (errno == EACCES || errno == EPERM) return ZIPC_PERMISSION_FAILURE;
+	return ZIPC_IO_FAILURE;
+}
+
+static std::string zipc_temp_path_for(const std::string& path)
+{
+	const size_t slash = path.find_last_of('/');
+	std::string dir;
+	std::string base;
+	if (slash == std::string::npos)
+	{
+		dir = ".";
+		base = path;
+	}
+	else if (slash == 0)
+	{
+		dir = "/";
+		base = path.substr(1);
+	}
+	else
+	{
+		dir = path.substr(0, slash);
+		base = path.substr(slash + 1);
+	}
+	if (base.empty()) base = "zipc";
+	if (dir == "/") return "/." + base + ".zipc_tmp_XXXXXX";
+	return dir + "/." + base + ".zipc_tmp_XXXXXX";
+}
+
+enum zipc_status zipc_add_file(const std::string& zipname, const std::string& targetFile)
+{
+	if (zipname.empty() || targetFile.empty()) return ZIPC_SYNTAX_ERROR;
+
+	FILE* input = fopen(targetFile.c_str(), "rb");
+	if (!input) return zipc_file_open_status();
+
+	enum zipc_status status = ZIPC_SUCCESS;
+	zipc* z = zipc_open(zipname.c_str(), "a", &status);
+	if (!z)
+	{
+		fclose(input);
+		return status;
+	}
+
+	zipcstream* stream = zipc_stream_open(z, targetFile.c_str(), "", &status);
+	if (!stream)
+	{
+		fclose(input);
+		return zipc_close_preserving_status(z, status);
+	}
+
+	std::vector<unsigned char> buf(64 * 1024);
+	for (;;)
+	{
+		const size_t bytes = fread(buf.data(), 1, buf.size(), input);
+		if (bytes > 0)
+		{
+			status = zipc_stream_write(z, stream, bytes, buf.data());
+			if (status != ZIPC_SUCCESS)
+			{
+				zipc_stream_abort(stream);
+				fclose(input);
+				return zipc_close_preserving_status(z, status);
+			}
+		}
+		if (bytes < buf.size())
+		{
+			if (ferror(input))
+			{
+				zipc_stream_abort(stream);
+				fclose(input);
+				return zipc_close_preserving_status(z, ZIPC_IO_FAILURE);
+			}
+			break;
+		}
+	}
+
+	if (fclose(input) != 0)
+	{
+		zipc_stream_abort(stream);
+		return zipc_close_preserving_status(z, ZIPC_IO_FAILURE);
+	}
+
+	status = zipc_stream_close(z, stream);
+	return zipc_close_preserving_status(z, status);
+}
+
+enum zipc_status zipc_extract_file(const std::string& zipname, const std::string& targetFile)
+{
+	if (zipname.empty() || targetFile.empty()) return ZIPC_SYNTAX_ERROR;
+	if (zipname == targetFile) return ZIPC_PATH_NOT_FOUND;
+
+	enum zipc_status status = ZIPC_SUCCESS;
+	zipc* z = zipc_open(zipname.c_str(), "r", &status);
+	if (!z) return status;
+
+	const auto it = z->files.find(targetFile);
+	if (it == z->files.end()) return zipc_close_preserving_status(z, ZIPC_PATH_NOT_FOUND);
+	const filenode& node = it->second;
+
+	std::string temp_template = zipc_temp_path_for(targetFile);
+	std::vector<char> temp_path(temp_template.begin(), temp_template.end());
+	temp_path.push_back('\0');
+	const int output_fd = mkstemp(temp_path.data());
+	if (output_fd < 0) return zipc_close_preserving_status(z, zipc_file_open_status());
+
+	FILE* output = fdopen(output_fd, "wb");
+	if (!output)
+	{
+		close(output_fd);
+		unlink(temp_path.data());
+		return zipc_close_preserving_status(z, ZIPC_IO_FAILURE);
+	}
+
+	if (!seek64(z->fp, node.data_offset, SEEK_SET))
+	{
+		fclose(output);
+		unlink(temp_path.data());
+		return zipc_close_preserving_status(z, ZIPC_IO_FAILURE);
+	}
+
+	std::vector<unsigned char> buf(64 * 1024);
+	uint64_t remaining = node.size;
+	while (remaining > 0)
+	{
+		const size_t chunk = remaining < (uint64_t)buf.size() ? (size_t)remaining : buf.size();
+		if (!read_fully(z->fp, buf.data(), chunk) || !write_all(output, buf.data(), chunk))
+		{
+			fclose(output);
+			unlink(temp_path.data());
+			return zipc_close_preserving_status(z, ZIPC_IO_FAILURE);
+		}
+		remaining -= chunk;
+	}
+
+	if (fclose(output) != 0)
+	{
+		unlink(temp_path.data());
+		return zipc_close_preserving_status(z, ZIPC_IO_FAILURE);
+	}
+	if (rename(temp_path.data(), targetFile.c_str()) != 0)
+	{
+		unlink(temp_path.data());
+		return zipc_close_preserving_status(z, ZIPC_IO_FAILURE);
+	}
+	return zipc_close_preserving_status(z, ZIPC_SUCCESS);
+}
