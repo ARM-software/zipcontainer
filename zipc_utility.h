@@ -4,6 +4,11 @@
 #include <sys/types.h>
 #include <stdio.h>
 
+#ifdef __cplusplus
+#include <string>
+#include <vector>
+#endif
+
 #include "zipc.h"
 
 #ifdef __cplusplus
@@ -52,4 +57,9 @@ void zipc_compare_free(const zipc_comparison* differences);
 
 #ifdef __cplusplus
 }
+
+/// Return a sorted list of files in the ZIP container. If `startsWith` is not empty,
+/// only paths with that prefix are returned. Returns an empty vector if the archive
+/// cannot be opened.
+std::vector<std::string> zipc_files(const std::string& zipname,	const std::string& startsWith = std::string());
 #endif

@@ -345,6 +345,22 @@ static void test_compare_utility()
 	create_test_archive("compare_first.zip", first_entries, sizeof(first_entries) / sizeof(first_entries[0]));
 	create_test_archive("compare_second.zip", second_entries, sizeof(second_entries) / sizeof(second_entries[0]));
 
+	std::vector<std::string> packed = zipc_files("compare_first.zip");
+	assert(packed.size() == 4);
+	assert(packed[0] == "diff.txt");
+	assert(packed[1] == "only-first.txt");
+	assert(packed[2] == "prefix.txt");
+	assert(packed[3] == "same.txt");
+
+	packed = zipc_files("compare_first.zip", "only-");
+	assert(packed.size() == 1);
+	assert(packed[0] == "only-first.txt");
+
+	packed = zipc_files("compare_first.zip", "missing/");
+	assert(packed.empty());
+	packed = zipc_files("does-not-exist.zip");
+	assert(packed.empty());
+
 	const zipc_comparison* comparison = zipc_compare("compare_first.zip", "compare_second.zip");
 	assert(comparison);
 	assert(comparison->status == ZIPC_SUCCESS);

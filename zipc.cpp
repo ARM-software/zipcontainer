@@ -1733,3 +1733,23 @@ void zipc_compare_free(const zipc_comparison* differences)
 {
 	free((void*)differences);
 }
+
+std::vector<std::string> zipc_files(const std::string& zipname, const std::string& startsWith)
+{
+	enum zipc_status status = ZIPC_SUCCESS;
+	zipc* z = zipc_open(zipname.c_str(), "r", &status);
+	if (!z) return {};
+
+	std::vector<std::string> files;
+	files.reserve(z->files.size());
+	for (const auto& kv : z->files)
+	{
+		if (!startsWith.empty() && kv.first.rfind(startsWith, 0) != 0) continue;
+		files.push_back(kv.first);
+	}
+	std::sort(files.begin(), files.end());
+
+	const enum zipc_status close_status = zipc_close(z);
+	if (close_status != ZIPC_SUCCESS) return {};
+	return files;
+}
