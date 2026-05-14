@@ -33,11 +33,13 @@ static std::vector<unsigned char> make_data(std::mt19937& rng, size_t size)
 static void read_and_check(zipc* z, const std::string& name, const std::vector<unsigned char>& expected)
 {
 	assert(z);
-	const ssize_t size = zipc_filesize(z, name.c_str());
-	assert(size == (ssize_t)expected.size());
+	uint64_t size = 0;
+	enum zipc_status r = zipc_filesize(z, name.c_str(), &size);
+	assert(r == ZIPC_SUCCESS);
+	assert(size == expected.size());
 
 	std::vector<unsigned char> buf(expected.size());
-	enum zipc_status r = zipc_read(z, name.c_str(), expected.size(), buf.data());
+	r = zipc_read(z, name.c_str(), expected.size(), buf.data());
 	assert(r == ZIPC_SUCCESS);
 	assert(memcmp(buf.data(), expected.data(), expected.size()) == 0);
 }
@@ -56,7 +58,8 @@ int main(int argc, char** argv)
 	assert(z);
 	assert(r == ZIPC_SUCCESS);
 
-	assert(zipc_filesize(z, "missing.bin") == -1);
+	uint64_t missing_size = 0;
+	assert(zipc_filesize(z, "missing.bin", &missing_size) == ZIPC_PATH_NOT_FOUND);
 
 	std::unordered_map<std::string, std::vector<unsigned char>> files;
 	files.reserve(128);

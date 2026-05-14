@@ -4,6 +4,7 @@
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <stdint.h>
 #include <sys/stat.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,6 +21,227 @@
 #pragma GCC diagnostic ignored "-Wunused-but-set-variable"
 #endif
 #endif
+
+static void write_le16(unsigned char* ptr, uint16_t value)
+{
+	ptr[0] = (unsigned char)(value & 0xFFU);
+	ptr[1] = (unsigned char)((value >> 8U) & 0xFFU);
+}
+
+static void write_le32(unsigned char* ptr, uint32_t value)
+{
+	ptr[0] = (unsigned char)(value & 0xFFU);
+	ptr[1] = (unsigned char)((value >> 8U) & 0xFFU);
+	ptr[2] = (unsigned char)((value >> 16U) & 0xFFU);
+	ptr[3] = (unsigned char)((value >> 24U) & 0xFFU);
+}
+
+static void write_le64(unsigned char* ptr, uint64_t value)
+{
+	ptr[0] = (unsigned char)(value & 0xFFU);
+	ptr[1] = (unsigned char)((value >> 8U) & 0xFFU);
+	ptr[2] = (unsigned char)((value >> 16U) & 0xFFU);
+	ptr[3] = (unsigned char)((value >> 24U) & 0xFFU);
+	ptr[4] = (unsigned char)((value >> 32U) & 0xFFU);
+	ptr[5] = (unsigned char)((value >> 40U) & 0xFFU);
+	ptr[6] = (unsigned char)((value >> 48U) & 0xFFU);
+	ptr[7] = (unsigned char)((value >> 56U) & 0xFFU);
+}
+
+static bool write_all_test(FILE* fp, const void* data, size_t size)
+{
+	return fwrite(data, 1, size, fp) == size;
+}
+
+static uint32_t crc32_test(const void* data, size_t size)
+{
+	uint32_t crc = 0xFFFFFFFFU;
+	const unsigned char* p = (const unsigned char*)data;
+	for (size_t i = 0; i < size; ++i)
+	{
+		crc ^= p[i];
+		for (int bit = 0; bit < 8; ++bit)
+		{
+			if (crc & 1U) crc = 0xEDB88320U ^ (crc >> 1U);
+			else crc >>= 1U;
+		}
+	}
+	return crc ^ 0xFFFFFFFFU;
+}
+
+static bool file_contains_signature(const char* filename, uint32_t signature)
+{
+	FILE* fp = fopen(filename, "rb");
+	assert(fp);
+	std::vector<unsigned char> data;
+	unsigned char buf[4096];
+	for (;;)
+	{
+		const size_t n = fread(buf, 1, sizeof(buf), fp);
+		data.insert(data.end(), buf, buf + n);
+		if (n < sizeof(buf)) break;
+	}
+	fclose(fp);
+
+	for (size_t i = 0; i + 4 <= data.size(); ++i)
+	{
+		const uint32_t value = (uint32_t)data[i] |
+			((uint32_t)data[i + 1] << 8U) |
+			((uint32_t)data[i + 2] << 16U) |
+			((uint32_t)data[i + 3] << 24U);
+		if (value == signature) return true;
+	}
+	return false;
+}
+
+static uint64_t checked_filesize(zipc* z, const char* path)
+{
+	uint64_t size = 0;
+	const enum zipc_status status = zipc_filesize(z, path, &size);
+	assert(status == ZIPC_SUCCESS);
+	return size;
+}
+
+static void create_sparse_zip64_offset_archive(const char* filename)
+{
+	const char* name = "huge-offset.txt";
+	const char* content = "zip64 offset sentinel";
+	const size_t name_len = strlen(name);
+	const size_t data_size = strlen(content);
+	const uint64_t local_offset = 0x100000000ULL;
+	const uint32_t crc = crc32_test(content, data_size);
+
+	FILE* fp = fopen(filename, "wb+");
+	assert(fp);
+	assert(fseeko(fp, (off_t)local_offset, SEEK_SET) == 0);
+
+	unsigned char local[30] = {0};
+	write_le32(local, 0x04034b50);
+	write_le16(local + 4, 45);
+	write_le32(local + 14, crc);
+	write_le32(local + 18, 0xFFFFFFFFU);
+	write_le32(local + 22, 0xFFFFFFFFU);
+	write_le16(local + 26, (uint16_t)name_len);
+	write_le16(local + 28, 20);
+	unsigned char local_extra[20] = {0};
+	write_le16(local_extra, 0x0001);
+	write_le16(local_extra + 2, 16);
+	write_le64(local_extra + 4, data_size);
+	write_le64(local_extra + 12, data_size);
+	assert(write_all_test(fp, local, sizeof(local)));
+	assert(write_all_test(fp, name, name_len));
+	assert(write_all_test(fp, local_extra, sizeof(local_extra)));
+	assert(write_all_test(fp, content, data_size));
+
+	const uint64_t cd_offset = (uint64_t)ftello(fp);
+	unsigned char cd[46] = {0};
+	write_le32(cd, 0x02014b50);
+	write_le16(cd + 4, 45);
+	write_le16(cd + 6, 45);
+	write_le32(cd + 16, crc);
+	write_le32(cd + 20, 0xFFFFFFFFU);
+	write_le32(cd + 24, 0xFFFFFFFFU);
+	write_le16(cd + 28, (uint16_t)name_len);
+	write_le16(cd + 30, 28);
+	write_le32(cd + 42, 0xFFFFFFFFU);
+	unsigned char cd_extra[28] = {0};
+	write_le16(cd_extra, 0x0001);
+	write_le16(cd_extra + 2, 24);
+	write_le64(cd_extra + 4, data_size);
+	write_le64(cd_extra + 12, data_size);
+	write_le64(cd_extra + 20, local_offset);
+	assert(write_all_test(fp, cd, sizeof(cd)));
+	assert(write_all_test(fp, name, name_len));
+	assert(write_all_test(fp, cd_extra, sizeof(cd_extra)));
+
+	const uint64_t cd_size = (uint64_t)ftello(fp) - cd_offset;
+	const uint64_t zip64_eocd_offset = (uint64_t)ftello(fp);
+	unsigned char eocd64[56] = {0};
+	write_le32(eocd64, 0x06064b50);
+	write_le64(eocd64 + 4, 44);
+	write_le16(eocd64 + 12, 45);
+	write_le16(eocd64 + 14, 45);
+	write_le64(eocd64 + 24, 1);
+	write_le64(eocd64 + 32, 1);
+	write_le64(eocd64 + 40, cd_size);
+	write_le64(eocd64 + 48, cd_offset);
+	assert(write_all_test(fp, eocd64, sizeof(eocd64)));
+
+	unsigned char locator[20] = {0};
+	write_le32(locator, 0x07064b50);
+	write_le64(locator + 8, zip64_eocd_offset);
+	write_le32(locator + 16, 1);
+	assert(write_all_test(fp, locator, sizeof(locator)));
+
+	unsigned char eocd[22] = {0};
+	write_le32(eocd, 0x06054b50);
+	write_le16(eocd + 8, 0xFFFFU);
+	write_le16(eocd + 10, 0xFFFFU);
+	write_le32(eocd + 12, 0xFFFFFFFFU);
+	write_le32(eocd + 16, 0xFFFFFFFFU);
+	assert(write_all_test(fp, eocd, sizeof(eocd)));
+	assert(fclose(fp) == 0);
+}
+
+static void create_saturated_eocd_without_locator(const char* filename)
+{
+	FILE* fp = fopen(filename, "wb");
+	assert(fp);
+	unsigned char eocd[22] = {0};
+	write_le32(eocd, 0x06054b50);
+	write_le16(eocd + 8, 0xFFFFU);
+	write_le16(eocd + 10, 0xFFFFU);
+	write_le32(eocd + 12, 0xFFFFFFFFU);
+	write_le32(eocd + 16, 0xFFFFFFFFU);
+	assert(write_all_test(fp, eocd, sizeof(eocd)));
+	assert(fclose(fp) == 0);
+}
+
+static void create_zip32_max_entries_archive(const char* filename)
+{
+	const uint32_t entry_count = 0xFFFFU;
+	const size_t name_len = 6;
+
+	FILE* fp = fopen(filename, "wb");
+	assert(fp);
+
+	for (uint32_t i = 0; i < entry_count; ++i)
+	{
+		char name[7];
+		snprintf(name, sizeof(name), "e%05u", i);
+		unsigned char local[30] = {0};
+		write_le32(local, 0x04034b50);
+		write_le16(local + 4, 20);
+		write_le16(local + 26, (uint16_t)name_len);
+		assert(write_all_test(fp, local, sizeof(local)));
+		assert(write_all_test(fp, name, name_len));
+	}
+
+	const uint32_t cd_offset = entry_count * (uint32_t)(30 + name_len);
+	for (uint32_t i = 0; i < entry_count; ++i)
+	{
+		char name[7];
+		snprintf(name, sizeof(name), "e%05u", i);
+		unsigned char cd[46] = {0};
+		write_le32(cd, 0x02014b50);
+		write_le16(cd + 4, 20);
+		write_le16(cd + 6, 20);
+		write_le16(cd + 28, (uint16_t)name_len);
+		write_le32(cd + 42, i * (uint32_t)(30 + name_len));
+		assert(write_all_test(fp, cd, sizeof(cd)));
+		assert(write_all_test(fp, name, name_len));
+	}
+
+	const uint32_t cd_size = entry_count * (uint32_t)(46 + name_len);
+	unsigned char eocd[22] = {0};
+	write_le32(eocd, 0x06054b50);
+	write_le16(eocd + 8, 0xFFFFU);
+	write_le16(eocd + 10, 0xFFFFU);
+	write_le32(eocd + 12, cd_size);
+	write_le32(eocd + 16, cd_offset);
+	assert(write_all_test(fp, eocd, sizeof(eocd)));
+	assert(fclose(fp) == 0);
+}
 
 #if defined(FALLOC_FL_PUNCH_HOLE) && defined(FALLOC_FL_KEEP_SIZE)
 static void test_punch_hole_support()
@@ -182,21 +404,25 @@ int main(int argc, char** argv)
 	zipc* z = zipc_open(zip_filename, "w", &r);
 	assert(r == ZIPC_SUCCESS);
 	assert(z);
-	ssize_t size = zipc_filesize(z, "nonexistent.file");
-	assert(size == -1);
+	uint64_t size = 0;
+	assert(zipc_filesize(z, "nonexistent.file", &size) == ZIPC_PATH_NOT_FOUND);
 	const char* internal_filename = "testcontent.txt";
 	const char* content = "This is a piece of content";
 	r = zipc_write(z, internal_filename, strlen(content), content);
 	assert(r == ZIPC_SUCCESS);
-	assert(zipc_filesize(z, internal_filename) == (ssize_t)strlen(content));
+	assert(zipc_filesize(z, internal_filename, &size) == ZIPC_SUCCESS);
+	assert(size == strlen(content));
+	assert(checked_filesize(z, internal_filename) == strlen(content));
 	r = zipc_close(z);
 	assert(r == ZIPC_SUCCESS);
+	assert(file_contains_signature(zip_filename, 0x06064b50));
+	assert(file_contains_signature(zip_filename, 0x07064b50));
 
 	// Read zip file just created
 	z = zipc_open("testfile.zip", "r", &r);
 	assert(r == ZIPC_SUCCESS);
 	assert(z);
-	assert(zipc_filesize(z, internal_filename) == (ssize_t)strlen(content));
+	assert(checked_filesize(z, internal_filename) == strlen(content));
 	char readback[128];
 	memset(readback, 0, sizeof(readback));
 	r = zipc_read(z, internal_filename, strlen(content), readback);
@@ -276,7 +502,7 @@ int main(int argc, char** argv)
 	z = zipc_open(map_zip_filename, "r", &r);
 	assert(r == ZIPC_SUCCESS);
 	assert(z);
-	assert(zipc_filesize(z, "map.txt") == (ssize_t)strlen(map_content));
+	assert(checked_filesize(z, "map.txt") == strlen(map_content));
 	char map_readback[128];
 	memset(map_readback, 0, sizeof(map_readback));
 	r = zipc_read(z, "map.txt", strlen(map_content), map_readback);
@@ -290,12 +516,9 @@ int main(int argc, char** argv)
 	z = zipc_open(TEXT_FILES_ZIP, "r", &r);
 	assert(z);
 	assert(r == ZIPC_SUCCESS);
-	size = zipc_filesize(z, "first.txt");
-	assert(size != -1);
-	size = zipc_filesize(z, "second.txt");
-	assert(size != -1);
-	size = zipc_filesize(z, "third.txt");
-	assert(size != -1);
+	assert(zipc_filesize(z, "first.txt", &size) == ZIPC_SUCCESS);
+	assert(zipc_filesize(z, "second.txt", &size) == ZIPC_SUCCESS);
+	assert(zipc_filesize(z, "third.txt", &size) == ZIPC_SUCCESS);
 	assert(zipc_validate(z) == ZIPC_SUCCESS);
 	assert(r == ZIPC_SUCCESS);
 	assert(z);
@@ -306,17 +529,43 @@ int main(int argc, char** argv)
 	z = zipc_open(TEXT_FILES2_ZIP, "r", &r);
 	assert(z);
 	assert(r == ZIPC_SUCCESS);
-	size = zipc_filesize(z, "first.txt");
-	assert(size != -1);
-	size = zipc_filesize(z, "second.txt");
-	assert(size != -1);
-	size = zipc_filesize(z, "third.txt");
-	assert(size != -1);
+	assert(zipc_filesize(z, "first.txt", &size) == ZIPC_SUCCESS);
+	assert(zipc_filesize(z, "second.txt", &size) == ZIPC_SUCCESS);
+	assert(zipc_filesize(z, "third.txt", &size) == ZIPC_SUCCESS);
 	assert(zipc_validate(z) == ZIPC_SUCCESS);
 	assert(r == ZIPC_SUCCESS);
 	assert(z);
 	r = zipc_close(z);
 	assert(r == ZIPC_SUCCESS);
+
+	create_sparse_zip64_offset_archive("sparse-offset.zip");
+	z = zipc_open("sparse-offset.zip", "r", &r);
+	assert(z);
+	assert(r == ZIPC_SUCCESS);
+	assert(checked_filesize(z, "huge-offset.txt") == strlen("zip64 offset sentinel"));
+	char sparse_readback[64];
+	memset(sparse_readback, 0, sizeof(sparse_readback));
+	r = zipc_read(z, "huge-offset.txt", strlen("zip64 offset sentinel"), sparse_readback);
+	assert(r == ZIPC_SUCCESS);
+	assert(strcmp(sparse_readback, "zip64 offset sentinel") == 0);
+	assert(zipc_validate(z) == ZIPC_SUCCESS);
+	r = zipc_close(z);
+	assert(r == ZIPC_SUCCESS);
+
+	create_zip32_max_entries_archive("zip32-max-entries.zip");
+	z = zipc_open("zip32-max-entries.zip", "r", &r);
+	assert(z);
+	assert(r == ZIPC_SUCCESS);
+	assert(checked_filesize(z, "e00000") == 0);
+	assert(checked_filesize(z, "e65534") == 0);
+	assert(zipc_validate(z) == ZIPC_SUCCESS);
+	r = zipc_close(z);
+	assert(r == ZIPC_SUCCESS);
+
+	create_saturated_eocd_without_locator("bad-zip64.zip");
+	z = zipc_open("bad-zip64.zip", "r", &r);
+	assert(z == nullptr);
+	assert(r == ZIPC_CORRUPT_ARCHIVE);
 
 	// Compressed files are expected to fail
 	z = zipc_open(COMPRESSED_ZIP, "r", &r);

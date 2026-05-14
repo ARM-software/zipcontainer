@@ -11,6 +11,7 @@ set(SRC_ROOT ${PROJECT_SOURCE_DIR})
 
 add_library(zipcontainer STATIC ${PROJECT_SOURCE_DIR}/zipc.cpp ${PROJECT_SOURCE_DIR}/zipc.h)
 target_include_directories(zipcontainer PUBLIC ${PROJECT_SOURCE_DIR})
+target_compile_definitions(zipcontainer PUBLIC _FILE_OFFSET_BITS=64)
 target_compile_options(zipcontainer PRIVATE -fPIC -Wall)
 
 add_executable(zipctest tests/zipctest.cpp ${PROJECT_SOURCE_DIR}/zipc.cpp ${PROJECT_SOURCE_DIR}/zipc.h)
@@ -19,6 +20,7 @@ target_compile_definitions(zipctest PUBLIC TEXT_FILES2_ZIP="${PROJECT_SOURCE_DIR
 target_compile_definitions(zipctest PUBLIC COMPRESSED_ZIP="${PROJECT_SOURCE_DIR}/tests/files/compressed.zip")
 target_compile_definitions(zipctest PUBLIC ENCRYPTED_ZIP="${PROJECT_SOURCE_DIR}/tests/files/encrypted.zip")
 target_include_directories(zipctest PUBLIC ${PROJECT_SOURCE_DIR})
+target_compile_definitions(zipctest PUBLIC _FILE_OFFSET_BITS=64)
 target_compile_options(zipctest PRIVATE -Wall)
 add_test(NAME zipctest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/zipctest)
 set_tests_properties(zipctest PROPERTIES FIXTURES_SETUP testfile_zip)
@@ -27,6 +29,7 @@ set_tests_properties(zipctest_result PROPERTIES FIXTURES_REQUIRED testfile_zip)
 
 add_executable(stresstest tests/stresstest.cpp ${PROJECT_SOURCE_DIR}/zipc.cpp ${PROJECT_SOURCE_DIR}/zipc.h)
 target_include_directories(stresstest PUBLIC ${PROJECT_SOURCE_DIR})
+target_compile_definitions(stresstest PUBLIC _FILE_OFFSET_BITS=64)
 target_compile_options(stresstest PRIVATE -Wall)
 add_test(NAME stresstest COMMAND ${CMAKE_CURRENT_BINARY_DIR}/stresstest)
 

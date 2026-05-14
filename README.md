@@ -20,8 +20,9 @@ A quick example of how it can be used:
 	enum zipc_status result;
 	zipc* fp = zipc_open("myfile.zip", "r", &result);
 	assert(result == ZIPC_SUCCESS);
-	int filesize = zipc_filesize(fp, "assets/image.png");
-	assert(filesize > 0);
+	uint64_t filesize = 0;
+	result = zipc_filesize(fp, "assets/image.png", &filesize);
+	assert(result == ZIPC_SUCCESS);
 	char* ptr = malloc(filesize);
 	result = zipc_read(fp, "assets/image.png", filesize, ptr);
 	assert(result == ZIPC_SUCCESS);

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdint.h>
 #include <sys/types.h>
 #include <stdio.h>
 
@@ -23,9 +24,9 @@ struct zipc_file_diff
 {
 	const char* name;
 	enum zipc_diff_kind kind;
-	size_t size_first;
-	size_t size_second;
-	size_t offset_first_diff; // if ZIPC_DIFF_CONTENT
+	uint64_t size_first;
+	uint64_t size_second;
+	uint64_t offset_first_diff; // if ZIPC_DIFF_CONTENT
 };
 typedef struct zipc_file_diff zipc_file_diff;
 
