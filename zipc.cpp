@@ -428,7 +428,7 @@ enum zipc_status zipc_close(zipc* handle)
 	if (handle->map_write_active) r = ZIPC_SYNTAX_ERROR;
 	if (handle->fp && fclose(handle->fp) != 0) r = ZIPC_IO_FAILURE;
 	delete handle;
-	return ZIPC_SUCCESS;
+	return r;
 }
 
 ssize_t zipc_filesize(zipc* handle, const char* path)
