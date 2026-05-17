@@ -497,8 +497,14 @@ static enum zipc_status load_existing_archive(zipc* z)
 	{
 		if (read_le32(&tail[i]) == 0x06054b50)
 		{
-			eocd_idx = static_cast<ssize_t>(i);
-			break;
+			const uint16_t comment_len = read_le16(&tail[i] + 20);
+			uint64_t eocd_end = 0;
+			if (add_u64(file_size - search + (uint64_t)i, 22U + (uint64_t)comment_len, &eocd_end) &&
+				eocd_end == file_size)
+			{
+				eocd_idx = static_cast<ssize_t>(i);
+				break;
+			}
 		}
 		if (i == 0) break;
 	}
@@ -834,20 +840,7 @@ zipc_mapping zipc_map_write(zipc* handle, const char* path, enum zipc_status* er
 		if (err) *err = ZIPC_UNSUPPORTED_FEATURE;
 		return mapping;
 	}
-	if (handle->central_dir_known)
-	{
-		if (!seek64(handle->fp, handle->central_dir_offset, SEEK_SET))
-		{
-			if (err) *err = ZIPC_IO_FAILURE;
-			return mapping;
-		}
-		if (!truncate64(handle->fp, handle->central_dir_offset))
-		{
-			if (err) *err = ZIPC_IO_FAILURE;
-			return mapping;
-		}
-	}
-	else if (!seek64(handle->fp, 0, SEEK_END))
+	if (!seek64(handle->fp, 0, SEEK_END))
 	{
 		if (err) *err = ZIPC_IO_FAILURE;
 		return mapping;
@@ -1023,15 +1016,7 @@ enum zipc_status zipc_write(zipc* handle, const char* path, uint64_t size, const
 	const size_t name_len = strlen(path);
 	if (name_len > 0xFFFF) return ZIPC_UNSUPPORTED_FEATURE;
 
-	if (handle->central_dir_known)
-	{
-		if (!seek64(handle->fp, handle->central_dir_offset, SEEK_SET)) return ZIPC_IO_FAILURE;
-		if (!truncate64(handle->fp, handle->central_dir_offset)) return ZIPC_IO_FAILURE;
-	}
-	else
-	{
-		if (!seek64(handle->fp, 0, SEEK_END)) return ZIPC_IO_FAILURE;
-	}
+	if (!seek64(handle->fp, 0, SEEK_END)) return ZIPC_IO_FAILURE;
 
 	uint64_t local_offset = 0;
 	if (!tell64(handle->fp, &local_offset)) return ZIPC_IO_FAILURE;
@@ -1048,7 +1033,9 @@ enum zipc_status zipc_write(zipc* handle, const char* path, uint64_t size, const
 	node.crc = crc;
 	handle->files.emplace(path, node);
 
-	return write_central_directory(handle);
+	const enum zipc_status status = write_central_directory(handle);
+	if (status != ZIPC_SUCCESS) handle->files.erase(path);
+	return status;
 }
 
 enum zipc_status zipc_read(zipc* handle, const char* path, uint64_t size, void* ptr)
@@ -1277,24 +1264,7 @@ enum zipc_status zipc_stream_close(zipc* handle, zipcstream* stream)
 		return ZIPC_IO_FAILURE;
 	}
 
-	if (handle->central_dir_known)
-	{
-		if (!seek64(handle->fp, handle->central_dir_offset, SEEK_SET))
-		{
-			fclose(stream->stream);
-			if (!stream->temp_path.empty()) unlink(stream->temp_path.c_str());
-			delete stream;
-			return ZIPC_IO_FAILURE;
-		}
-		if (!truncate64(handle->fp, handle->central_dir_offset))
-		{
-			fclose(stream->stream);
-			if (!stream->temp_path.empty()) unlink(stream->temp_path.c_str());
-			delete stream;
-			return ZIPC_IO_FAILURE;
-		}
-	}
-	else if (!seek64(handle->fp, 0, SEEK_END))
+	if (!seek64(handle->fp, 0, SEEK_END))
 	{
 		fclose(stream->stream);
 		if (!stream->temp_path.empty()) unlink(stream->temp_path.c_str());
@@ -1426,6 +1396,28 @@ enum zipc_status zipc_validate(zipc* handle)
 	if (!handle) return ZIPC_SYNTAX_ERROR;
 	if (!handle->fp) return ZIPC_IO_FAILURE;
 	if (!handle->central_dir_known) return ZIPC_CORRUPT_ARCHIVE;
+
+	zipc disk_state;
+	disk_state.fp = handle->fp;
+	const enum zipc_status load_status = load_existing_archive(&disk_state);
+	if (load_status != ZIPC_SUCCESS) return load_status;
+	if (!disk_state.central_dir_known) return ZIPC_CORRUPT_ARCHIVE;
+	if (disk_state.central_dir_offset != handle->central_dir_offset) return ZIPC_CORRUPT_ARCHIVE;
+	if (disk_state.files.size() != handle->files.size()) return ZIPC_CORRUPT_ARCHIVE;
+	for (const auto& kv : handle->files)
+	{
+		const auto it = disk_state.files.find(kv.first);
+		if (it == disk_state.files.end()) return ZIPC_CORRUPT_ARCHIVE;
+		const filenode& expected = kv.second;
+		const filenode& actual = it->second;
+		if (expected.size != actual.size ||
+			expected.data_offset != actual.data_offset ||
+			expected.local_offset != actual.local_offset ||
+			expected.crc != actual.crc)
+		{
+			return ZIPC_CORRUPT_ARCHIVE;
+		}
+	}
 
 	if (!seek64(handle->fp, 0, SEEK_END)) return ZIPC_IO_FAILURE;
 	uint64_t file_size = 0;

@@ -10,6 +10,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <unistd.h>
+#include <string>
 #include <vector>
 
 #ifdef NDEBUG
@@ -21,6 +22,28 @@
 #pragma GCC diagnostic ignored "-Wunused-but-set-variable"
 #endif
 #endif
+
+static uint16_t read_le16(const unsigned char* ptr)
+{
+	return (uint16_t)ptr[0] | ((uint16_t)ptr[1] << 8U);
+}
+
+static uint32_t read_le32(const unsigned char* ptr)
+{
+	return (uint32_t)ptr[0] | ((uint32_t)ptr[1] << 8U) | ((uint32_t)ptr[2] << 16U) | ((uint32_t)ptr[3] << 24U);
+}
+
+static uint64_t read_le64(const unsigned char* ptr)
+{
+	return (uint64_t)ptr[0] |
+		((uint64_t)ptr[1] << 8U) |
+		((uint64_t)ptr[2] << 16U) |
+		((uint64_t)ptr[3] << 24U) |
+		((uint64_t)ptr[4] << 32U) |
+		((uint64_t)ptr[5] << 40U) |
+		((uint64_t)ptr[6] << 48U) |
+		((uint64_t)ptr[7] << 56U);
+}
 
 static void write_le16(unsigned char* ptr, uint16_t value)
 {
@@ -78,6 +101,32 @@ static std::string read_text_file(const char* filename)
 	return result;
 }
 
+static std::vector<unsigned char> read_binary_file(const char* filename)
+{
+	FILE* fp = fopen(filename, "rb");
+	assert(fp);
+	std::vector<unsigned char> result;
+	unsigned char buf[4096];
+	for (;;)
+	{
+		const size_t bytes = fread(buf, 1, sizeof(buf), fp);
+		result.insert(result.end(), buf, buf + bytes);
+		if (bytes < sizeof(buf)) break;
+	}
+	assert(!ferror(fp));
+	assert(fclose(fp) == 0);
+	return result;
+}
+
+static void write_binary_file(const char* filename, const std::vector<unsigned char>& data)
+{
+	FILE* fp = fopen(filename, "wb");
+	assert(fp);
+	const bool wrote = data.empty() || write_all_test(fp, data.data(), data.size());
+	assert(wrote);
+	assert(fclose(fp) == 0);
+}
+
 static off_t file_size_on_disk(const char* filename)
 {
 	struct stat st{};
@@ -124,6 +173,56 @@ static bool file_contains_signature(const char* filename, uint32_t signature)
 		if (value == signature) return true;
 	}
 	return false;
+}
+
+static size_t count_file_signature(const char* filename, uint32_t signature)
+{
+	const std::vector<unsigned char> data = read_binary_file(filename);
+	size_t count = 0;
+	for (size_t i = 0; i + 4 <= data.size(); ++i)
+	{
+		const uint32_t value = (uint32_t)data[i] |
+			((uint32_t)data[i + 1] << 8U) |
+			((uint32_t)data[i + 2] << 16U) |
+			((uint32_t)data[i + 3] << 24U);
+		if (value == signature) ++count;
+	}
+	return count;
+}
+
+static size_t terminal_eocd_offset(const std::vector<unsigned char>& data)
+{
+	assert(data.size() >= 22);
+	for (size_t i = data.size() - 22;; --i)
+	{
+		if (read_le32(data.data() + i) == 0x06054b50)
+		{
+			const uint16_t comment_len = read_le16(data.data() + i + 20);
+			if (i + 22U + (size_t)comment_len == data.size()) return i;
+		}
+		if (i == 0) break;
+	}
+	assert(false);
+	return 0;
+}
+
+static size_t terminal_central_directory_offset(const std::vector<unsigned char>& data)
+{
+	const size_t eocd = terminal_eocd_offset(data);
+	assert(eocd + 22 <= data.size());
+	if (eocd >= 20 && read_le32(data.data() + eocd - 20) == 0x07064b50)
+	{
+		const uint64_t zip64_eocd = read_le64(data.data() + eocd - 20 + 8);
+		assert(data.size() >= 56U && zip64_eocd <= (uint64_t)data.size() - 56U);
+		assert(read_le32(data.data() + (size_t)zip64_eocd) == 0x06064b50);
+		const uint64_t cd_offset = read_le64(data.data() + (size_t)zip64_eocd + 48);
+		assert(cd_offset <= (uint64_t)data.size());
+		return (size_t)cd_offset;
+	}
+
+	const uint32_t cd_offset = read_le32(data.data() + eocd + 16);
+	assert(cd_offset <= data.size());
+	return cd_offset;
 }
 
 static uint64_t checked_filesize(zipc* z, const char* path)
@@ -334,6 +433,26 @@ struct test_entry
 	const char* content;
 };
 
+static void assert_archive_entries(const char* filename, const test_entry* entries, size_t count)
+{
+	enum zipc_status status = ZIPC_SUCCESS;
+	zipc* z = zipc_open(filename, "r", &status);
+	assert(status == ZIPC_SUCCESS);
+	assert(z);
+	for (size_t i = 0; i < count; ++i)
+	{
+		const uint64_t size = checked_filesize(z, entries[i].path);
+		assert(size == strlen(entries[i].content));
+		std::vector<char> readback((size_t)size + 1, '\0');
+		status = zipc_read(z, entries[i].path, size, readback.data());
+		assert(status == ZIPC_SUCCESS);
+		assert(memcmp(readback.data(), entries[i].content, (size_t)size) == 0);
+	}
+	assert(zipc_validate(z) == ZIPC_SUCCESS);
+	status = zipc_close(z);
+	assert(status == ZIPC_SUCCESS);
+}
+
 static void create_test_archive(const char* filename, const test_entry* entries, size_t count)
 {
 	enum zipc_status status = ZIPC_SUCCESS;
@@ -347,6 +466,136 @@ static void create_test_archive(const char* filename, const test_entry* entries,
 	}
 	status = zipc_close(z);
 	assert(status == ZIPC_SUCCESS);
+}
+
+static void assert_corrupt_archive(const char* filename)
+{
+	enum zipc_status status = ZIPC_SUCCESS;
+	zipc* z = zipc_open(filename, "r", &status);
+	assert(z == nullptr);
+	assert(status == ZIPC_CORRUPT_ARCHIVE);
+}
+
+static void test_validate_rechecks_terminal_directory()
+{
+	const char* filename = "validate-terminal-corrupt.zip";
+	unlink(filename);
+
+	enum zipc_status status = ZIPC_SUCCESS;
+	zipc* z = zipc_open(filename, "w", &status);
+	assert(status == ZIPC_SUCCESS);
+	assert(z);
+	status = zipc_write(z, "stable.txt", strlen("stable content"), "stable content");
+	assert(status == ZIPC_SUCCESS);
+	assert(zipc_validate(z) == ZIPC_SUCCESS);
+
+	std::vector<unsigned char> data = read_binary_file(filename);
+	const size_t cd_offset = terminal_central_directory_offset(data);
+	std::vector<unsigned char> missing_cd = data;
+	missing_cd.resize(cd_offset);
+	write_binary_file(filename, missing_cd);
+	assert(zipc_validate(z) == ZIPC_CORRUPT_ARCHIVE);
+	status = zipc_close(z);
+	assert(status == ZIPC_SUCCESS);
+
+	z = zipc_open(filename, "w", &status);
+	assert(status == ZIPC_SUCCESS);
+	assert(z);
+	status = zipc_write(z, "stable.txt", strlen("stable content"), "stable content");
+	assert(status == ZIPC_SUCCESS);
+	assert(zipc_validate(z) == ZIPC_SUCCESS);
+
+	data = read_binary_file(filename);
+	const size_t damaged_cd_offset = terminal_central_directory_offset(data);
+	data[damaged_cd_offset] ^= 0xFFU;
+	write_binary_file(filename, data);
+	assert(zipc_validate(z) == ZIPC_CORRUPT_ARCHIVE);
+	status = zipc_close(z);
+	assert(status == ZIPC_SUCCESS);
+}
+
+static void test_append_only_safety()
+{
+	const char* filename = "append-only.zip";
+	unlink(filename);
+
+	enum zipc_status status = ZIPC_SUCCESS;
+	zipc* z = zipc_open(filename, "w", &status);
+	assert(status == ZIPC_SUCCESS);
+	assert(z);
+
+	status = zipc_write(z, "direct.txt", strlen("direct content"), "direct content");
+	assert(status == ZIPC_SUCCESS);
+	const off_t direct_size = file_size_on_disk(filename);
+	assert(count_file_signature(filename, 0x02014b50) == 1);
+
+	zipc_mapping mapping = zipc_map_write(z, "mapped.txt", &status, 256);
+	assert(status == ZIPC_SUCCESS);
+	assert(mapping.data);
+	const char* mapped_content = "mapped content";
+	memcpy(mapping.data, mapped_content, strlen(mapped_content));
+	status = zipc_unmap_write(z, mapping, strlen(mapped_content));
+	assert(status == ZIPC_SUCCESS);
+	const off_t mapped_size = file_size_on_disk(filename);
+	assert(mapped_size > direct_size);
+	assert(count_file_signature(filename, 0x02014b50) == 3);
+	assert(zipc_validate(z) == ZIPC_SUCCESS);
+
+	zipcstream* stream = zipc_stream_open(z, "streamed.txt", "", &status);
+	assert(status == ZIPC_SUCCESS);
+	assert(stream);
+	status = zipc_stream_write(z, stream, strlen("streamed "), "streamed ");
+	assert(status == ZIPC_SUCCESS);
+	status = zipc_stream_write(z, stream, strlen("content"), "content");
+	assert(status == ZIPC_SUCCESS);
+	status = zipc_stream_close(z, stream);
+	assert(status == ZIPC_SUCCESS);
+	const off_t streamed_size = file_size_on_disk(filename);
+	assert(streamed_size > mapped_size);
+	assert(count_file_signature(filename, 0x02014b50) == 6);
+	assert(zipc_validate(z) == ZIPC_SUCCESS);
+
+	status = zipc_close(z);
+	assert(status == ZIPC_SUCCESS);
+
+	z = zipc_open(filename, "a", &status);
+	assert(status == ZIPC_SUCCESS);
+	assert(z);
+	status = zipc_write(z, "appended.txt", strlen("append mode"), "append mode");
+	assert(status == ZIPC_SUCCESS);
+	assert(file_size_on_disk(filename) > streamed_size);
+	assert(count_file_signature(filename, 0x02014b50) == 10);
+	assert(zipc_validate(z) == ZIPC_SUCCESS);
+	status = zipc_close(z);
+	assert(status == ZIPC_SUCCESS);
+
+	const test_entry entries[] = {
+		{"direct.txt", "direct content"},
+		{"mapped.txt", "mapped content"},
+		{"streamed.txt", "streamed content"},
+		{"appended.txt", "append mode"},
+	};
+	assert_archive_entries(filename, entries, sizeof(entries) / sizeof(entries[0]));
+
+	std::vector<unsigned char> damaged = read_binary_file(filename);
+	const size_t cd_offset = terminal_central_directory_offset(damaged);
+	std::vector<unsigned char> missing_cd = damaged;
+	missing_cd.resize(cd_offset);
+	write_binary_file("append-only-missing-cd.zip", missing_cd);
+	assert_corrupt_archive("append-only-missing-cd.zip");
+
+	damaged[cd_offset] ^= 0xFFU;
+	write_binary_file("append-only-damaged-cd.zip", damaged);
+	assert_corrupt_archive("append-only-damaged-cd.zip");
+
+	// Simulate a mid-write crash: a complete valid archive with a partial
+	// local file header appended after the EOCD (as if a new write started
+	// but the process died before the new central directory was written).
+	std::vector<unsigned char> partial_write = read_binary_file(filename);
+	const unsigned char junk[] = { 0x50, 0x4B, 0x03, 0x04, 0xDE, 0xAD, 0xBE, 0xEF };
+	partial_write.insert(partial_write.end(), junk, junk + sizeof(junk));
+	write_binary_file("append-only-partial-write.zip", partial_write);
+	assert_corrupt_archive("append-only-partial-write.zip");
 }
 
 static const zipc_file_diff* find_diff(const zipc_comparison* comparison, const char* name)
@@ -545,6 +794,8 @@ int main(int argc, char** argv)
 #endif
 
 	test_compare_utility();
+	test_append_only_safety();
+	test_validate_rechecks_terminal_directory();
 
 	// Map write zip file
 	const char* map_zip_filename = "mapwrite.zip";
