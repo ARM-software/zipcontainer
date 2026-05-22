@@ -706,6 +706,57 @@ static void test_compare_utility()
 	zipc_compare_free(comparison);
 }
 
+static void test_open_fd()
+{
+	enum zipc_status r = ZIPC_SUCCESS;
+	const char* filename = "fdtest.zip";
+	unlink(filename);
+
+	// 1. Create a zip archive using a file descriptor (with ownership)
+	int fd = open(filename, O_RDWR | O_CREAT | O_TRUNC, 0666);
+	assert(fd >= 0);
+
+	zipc* z = zipc_open_fd(fd, "w", 1, &r);
+	assert(r == ZIPC_SUCCESS);
+	assert(z);
+
+	const char* content = "FD open content test";
+	r = zipc_write(z, "fd_file.txt", strlen(content), content);
+	assert(r == ZIPC_SUCCESS);
+
+	r = zipc_close(z);
+	assert(r == ZIPC_SUCCESS);
+
+	// 2. Open it back up for reading using a file descriptor (without ownership)
+	fd = open(filename, O_RDONLY);
+	assert(fd >= 0);
+
+	z = zipc_open_fd(fd, "r", 0, &r);
+	assert(r == ZIPC_SUCCESS);
+	assert(z);
+
+	uint64_t size = 0;
+	r = zipc_filesize(z, "fd_file.txt", &size);
+	assert(r == ZIPC_SUCCESS);
+	assert(size == strlen(content));
+
+	char readback[128];
+	memset(readback, 0, sizeof(readback));
+	r = zipc_read(z, "fd_file.txt", size, readback);
+	assert(r == ZIPC_SUCCESS);
+	assert(strcmp(readback, content) == 0);
+
+	r = zipc_close(z);
+	assert(r == ZIPC_SUCCESS);
+
+	// fd should still be open since close_fd was 0
+	int flags = fcntl(fd, F_GETFL);
+	assert(flags >= 0);
+	close(fd);
+
+	unlink(filename);
+}
+
 int main(int argc, char** argv)
 {
 	(void)argc;
@@ -794,6 +845,7 @@ int main(int argc, char** argv)
 #endif
 
 	test_compare_utility();
+	test_open_fd();
 	test_append_only_safety();
 	test_validate_rechecks_terminal_directory();
 

@@ -1,3 +1,7 @@
+#ifndef _FILE_OFFSET_BITS
+#define _FILE_OFFSET_BITS 64
+#endif
+
 #include "zipc.h"
 #include "zipc_utility.h"
 
@@ -17,8 +21,52 @@
 #include <sys/mman.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <dlfcn.h>
 
-extern "C" ssize_t copy_file_range(int fd_in, off_t* off_in, int fd_out, off_t* off_out, size_t len, unsigned int flags);
+static ssize_t safe_copy_file_range(int fd_in, off_t* off_in, int fd_out, off_t* off_out, size_t len, unsigned int flags)
+{
+	typedef ssize_t (*cfr_func_t)(int, off_t*, int, off_t*, size_t, unsigned int);
+	static cfr_func_t pfn_cfr = (cfr_func_t)dlsym(RTLD_DEFAULT, "copy_file_range");
+
+	if (pfn_cfr)
+	{
+		ssize_t ret = pfn_cfr(fd_in, off_in, fd_out, off_out, len, flags);
+		if (ret >= 0 || (errno != EXDEV && errno != ENOSYS && errno != EOPNOTSUPP && errno != EINVAL))
+		{
+			return ret;
+		}
+	}
+
+	constexpr size_t BUF_SIZE = 64 * 1024;
+	std::vector<char> buffer(BUF_SIZE);
+	size_t remaining = len;
+
+	off_t orig_in = 0, orig_out = 0;
+	if (off_in && (orig_in = lseek(fd_in, *off_in, SEEK_SET)) < 0) return -1;
+	if (off_out && (orig_out = lseek(fd_out, *off_out, SEEK_SET)) < 0) return -1;
+
+	while (remaining > 0)
+	{
+		size_t chunk = (remaining < BUF_SIZE) ? remaining : BUF_SIZE;
+		ssize_t bytes_read = read(fd_in, buffer.data(), chunk);
+		if (bytes_read < 0) return -1;
+		if (bytes_read == 0) break;
+
+		size_t written = 0;
+		while (written < (size_t)bytes_read)
+		{
+			ssize_t bytes_written = write(fd_out, buffer.data() + written, bytes_read - written);
+			if (bytes_written <= 0) return -1;
+			written += bytes_written;
+		}
+		remaining -= bytes_read;
+	}
+
+	if (off_in) { *off_in = lseek(fd_in, 0, SEEK_CUR); }
+	if (off_out) { *off_out = lseek(fd_out, 0, SEEK_CUR); }
+
+	return len - remaining;
+}
 
 // Private definitions
 
@@ -701,6 +749,76 @@ zipc* zipc_open(const char* filename, const char* mode, enum zipc_status* err)
 	return z;
 }
 
+zipc* zipc_open_fd(int fd, const char* mode, int close_fd, enum zipc_status* err)
+{
+	if (err) *err = ZIPC_SUCCESS;
+	if (fd < 0 || !mode || strlen(mode) != 1)
+	{
+		if (err) *err = ZIPC_SYNTAX_ERROR;
+		return nullptr;
+	}
+
+	int target_fd = fd;
+	if (!close_fd)
+	{
+		target_fd = dup(fd);
+		if (target_fd < 0)
+		{
+			if (err) *err = ZIPC_IO_FAILURE;
+			return nullptr;
+		}
+	}
+
+	zipc* z = new zipc();
+	z->filename = "fd:" + std::to_string(fd);
+	if (mode[0] == 'r') z->mode = ZIPC_READ_ONLY;
+	else if (mode[0] == 'w') z->mode = ZIPC_WRITE_ONLY;
+	else if (mode[0] == 'a') z->mode = ZIPC_APPEND;
+	else
+	{
+		if (err) *err = ZIPC_SYNTAX_ERROR;
+		if (!close_fd) close(target_fd);
+		delete z;
+		return nullptr;
+	}
+
+	const char* fopen_mode = (z->mode == ZIPC_READ_ONLY) ? "rb" : (z->mode == ZIPC_WRITE_ONLY ? "wb+" : "rb+");
+	z->fp = fdopen(target_fd, fopen_mode);
+	if (!z->fp)
+	{
+		if (err) *err = ZIPC_PERMISSION_FAILURE;
+		if (!close_fd) close(target_fd);
+		delete z;
+		return nullptr;
+	}
+
+	if (z->mode == ZIPC_WRITE_ONLY)
+	{
+		if (!write_empty_archive(z->fp))
+		{
+			if (err) *err = ZIPC_IO_FAILURE;
+			fclose(z->fp);
+			delete z;
+			return nullptr;
+		}
+		z->central_dir_offset = 0;
+		z->central_dir_known = true;
+		return z;
+	}
+
+	const enum zipc_status status = load_existing_archive(z);
+	if (status != ZIPC_SUCCESS)
+	{
+		if (err) *err = status;
+		fclose(z->fp);
+		delete z;
+		return nullptr;
+	}
+
+	if (z->mode == ZIPC_APPEND) seek64(z->fp, 0, SEEK_END);
+	return z;
+}
+
 enum zipc_status zipc_close(zipc* handle)
 {
 	enum zipc_status r = ZIPC_SUCCESS;
@@ -1109,7 +1227,24 @@ zipcstream* zipc_stream_open(zipc* handle, const char* path, const char* mode, e
 	std::vector<char> buf(tmpl.begin(), tmpl.end());
 	buf.push_back('\0');
 
-	const int fd = mkstemp(buf.data());
+	int fd = mkstemp(buf.data());
+	if (fd < 0)
+	{
+		const char* env_tmp = getenv("TMPDIR");
+		if (!env_tmp) env_tmp = "/tmp";
+
+		tmpl = std::string(env_tmp) + "/.zipc_tmp_XXXXXX";
+		buf = std::vector<char>(tmpl.begin(), tmpl.end());
+		buf.push_back('\0');
+		fd = mkstemp(buf.data());
+		if (fd < 0 && strcmp(env_tmp, "/tmp") != 0)
+		{
+			tmpl = "/tmp/.zipc_tmp_XXXXXX";
+			buf = std::vector<char>(tmpl.begin(), tmpl.end());
+			buf.push_back('\0');
+			fd = mkstemp(buf.data());
+		}
+	}
 	if (fd < 0)
 	{
 		if (err) *err = ZIPC_IO_FAILURE;
@@ -1329,7 +1464,7 @@ enum zipc_status zipc_stream_close(zipc* handle, zipcstream* stream)
 			delete stream;
 			return ZIPC_IO_FAILURE;
 		}
-		const ssize_t moved = copy_file_range(fd_in, nullptr, fd_out, nullptr, chunk, 0);
+		const ssize_t moved = safe_copy_file_range(fd_in, nullptr, fd_out, nullptr, chunk, 0);
 		if (moved <= 0)
 		{
 			fclose(stream->stream);

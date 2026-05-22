@@ -1,5 +1,9 @@
 #pragma once
 
+#ifndef _FILE_OFFSET_BITS
+#define _FILE_OFFSET_BITS 64
+#endif
+
 #include <stdint.h>
 #include <sys/types.h>
 
@@ -33,6 +37,11 @@ const char* zipc_strerror(zipc_status err);
 /// thread access to the returned handle unless otherwise specified below. You cannot
 /// mix modes. If `err` is not null, we will write status to it. Returns null on failure.
 zipc* zipc_open(const char* filename, const char* mode, enum zipc_status* err);
+
+/// Open an uncompressed ZIP file using a POSIX file descriptor. The library does NOT take
+/// ownership of the file descriptor unless close_fd is non-zero. If close_fd is non-zero,
+/// the file descriptor will be closed when the handle is closed.
+zipc* zipc_open_fd(int fd, const char* mode, int close_fd, enum zipc_status* err);
 
 /// Close an open ZIP file handle. Returns ZIPC_SUCCESS on clean close.
 enum zipc_status zipc_close(zipc* handle);
